@@ -1,14 +1,17 @@
 name: Build and push image to ECR
 
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: Tests
+    branches: main
+    types: completed
 
 jobs:
   deploy:
     name: Deploy
     needs: tests
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
       - name: Checkout
