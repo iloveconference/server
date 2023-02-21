@@ -5,9 +5,9 @@ import click
 @click.command()
 @click.version_option()
 def main() -> None:
-    """Server."""
+    """CLI."""
     pass
 
 
 if __name__ == "__main__":
-    main(prog_name="server")  # pragma: no cover
+    main(prog_name="CLI")  # pragma: no cover

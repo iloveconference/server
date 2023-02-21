@@ -7,11 +7,11 @@ data
 dist
 docs
 notebooks
-src/.env
 .cookiecutter.json
 .coverage
 .darglint
 .dockerignore
+.env
 .flake8
 .gitattributes
 .gitignore

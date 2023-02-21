@@ -4,15 +4,19 @@ import os
 import random
 import traceback
 from enum import IntEnum
+from typing import Awaitable
+from typing import Callable
 
 import openai
-import pinecone
+import pinecone  # type: ignore
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi import Query
 from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import Response
+
+from server.search_utils import get_prompt
 
 
 # init environment
@@ -21,11 +25,12 @@ pinecone_key = os.environ["PINECONE_KEY"]
 openai_key = os.environ["OPENAI_KEY"]
 
 # init logging
-logging.config.fileConfig("src/logging.ini")
+logging.config.fileConfig("logging.ini")
 logger = logging.getLogger(__name__)
 
 # init fastapi
-app = FastAPI(debug=os.environ.get("DEBUG", False))
+debug = os.environ.get("DEBUG", "false").lower() == "true"
+app = FastAPI(debug=debug)
 
 # init openai
 openai.api_key = openai_key
@@ -61,7 +66,9 @@ class SearchResponse(BaseModel):
 
 
 @app.middleware("http")
-async def log_exceptions_middleware(request: Request, call_next):
+async def log_exceptions_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     """Log exceptions."""
     try:
         return await call_next(request)
@@ -80,11 +87,13 @@ async def log_exceptions_middleware(request: Request, call_next):
 
 
 @app.get("/search")
-async def search(q: str | None = Query(default=None, max_length=100)) -> SearchResponse:
+async def search(q: str = Query(max_length=100)) -> SearchResponse:
     """Search."""
     # get query embedding
     logger.info("get embedding", extra={"q": q})
-    embed_response = openai.Embedding.create(input=[q], engine=embedding_model)
+    embed_response = openai.Embedding.create(
+        input=[q], engine=embedding_model
+    )  # type: ignore
     embedding = embed_response["data"][0]["embedding"]
     # query index
     logger.info("query index", extra={"q": q})
@@ -92,7 +101,7 @@ async def search(q: str | None = Query(default=None, max_length=100)) -> SearchR
     # get prompt
     logger.info("get prompt", extra={"q": q})
     contexts = [res["metadata"]["context"] for res in query_response["matches"]]
-    prompt = _get_prompt(q, contexts)
+    prompt = get_prompt(q, contexts, prompt_limit)
     # get answer
     logger.info("get answer", extra={"q": q})
     answer_response = openai.Completion.create(
@@ -104,7 +113,7 @@ async def search(q: str | None = Query(default=None, max_length=100)) -> SearchR
         frequency_penalty=0,
         presence_penalty=0,
         stop=None,
-    )
+    )  # type: ignore
     answer = answer_response["choices"][0]["text"].strip()
     response = SearchResponse(
         q=q,
@@ -121,24 +130,6 @@ async def search(q: str | None = Query(default=None, max_length=100)) -> SearchR
     )
     logger.info("search", extra={"q": q, "response": response.dict()})
     return response
-
-
-def _get_prompt(query, contexts):
-    def _get_prompt_for_contexts(ctxs):
-        return (
-            "Answer the question based on the context below.\n\n"
-            + "Context:\n"
-            + "\n\n---\n\n".join(ctxs)
-            + f"\n\nQuestion: {query}\nAnswer:"
-        )
-
-    n_contexts = 0
-    while (
-        n_contexts < len(contexts)
-        and len(_get_prompt_for_contexts(contexts[0 : n_contexts + 1])) < prompt_limit
-    ):
-        n_contexts += 1
-    return _get_prompt_for_contexts(contexts[0:n_contexts])
 
 
 class Rating(IntEnum):

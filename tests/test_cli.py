@@ -1,8 +1,8 @@
-"""Test cases for the __main__ module."""
+"""Test cases for the CLI."""
 import pytest
 from click.testing import CliRunner
 
-from cli import __main__
+from server import cli
 
 
 @pytest.fixture
@@ -13,5 +13,5 @@ def runner() -> CliRunner:
 
 def test_main_succeeds(runner: CliRunner) -> None:
     """It exits with a status code of zero."""
-    result = runner.invoke(__main__.main)
+    result = runner.invoke(cli.main)
     assert result.exit_code == 0

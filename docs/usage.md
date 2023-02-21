@@ -1,7 +1,7 @@
 # Usage
 
 ```{eval-rst}
-.. click:: server.__main__:main
+.. click:: server.cli:main
     :prog: server
     :nested: full
 ```
