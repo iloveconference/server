@@ -2,7 +2,7 @@
 import pytest
 from click.testing import CliRunner
 
-from server import __main__
+from cli import __main__
 
 
 @pytest.fixture

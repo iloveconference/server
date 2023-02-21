@@ -6,6 +6,7 @@ import click
 @click.version_option()
 def main() -> None:
     """Server."""
+    pass
 
 
 if __name__ == "__main__":
