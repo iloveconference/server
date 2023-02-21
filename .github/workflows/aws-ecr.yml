@@ -9,7 +9,6 @@ on:
 jobs:
   deploy:
     name: Deploy
-    needs: tests
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
