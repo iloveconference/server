@@ -25,7 +25,7 @@ pinecone_key = os.environ["PINECONE_KEY"]
 openai_key = os.environ["OPENAI_KEY"]
 
 # init logging
-logging.config.fileConfig("logging.ini")
+logging.config.fileConfig("server/logging.ini")
 logger = logging.getLogger(__name__)
 
 # init fastapi
