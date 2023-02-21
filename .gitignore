@@ -7,5 +7,8 @@
 /dist/
 /docs/_build/
 /src/*.egg-info/
+/src/.env
+/src/.env.*
 __pycache__/
 .idea/
+data/

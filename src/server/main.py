@@ -1,0 +1,158 @@
+"""Server."""
+import logging.config
+import os
+import random
+import traceback
+from enum import IntEnum
+
+import openai
+import pinecone
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi import Query
+from pydantic import BaseModel
+from starlette.requests import Request
+from starlette.responses import Response
+
+
+# init environment
+load_dotenv()
+pinecone_key = os.environ["PINECONE_KEY"]
+openai_key = os.environ["OPENAI_KEY"]
+
+# init logging
+logging.config.fileConfig("src/logging.ini")
+logger = logging.getLogger(__name__)
+
+# init fastapi
+app = FastAPI(debug=os.environ.get("DEBUG", False))
+
+# init openai
+openai.api_key = openai_key
+embedding_model = "text-embedding-ada-002"
+prompt_limit = 1000  # 3750
+
+# init pinecone
+index_name = "openai-ml-qa"
+# initialize connection to pinecone (get API key at app.pinecone.io)
+pinecone.init(
+    api_key=pinecone_key,
+    environment="us-west1-gcp",  # may be different, check at app.pinecone.io
+)
+index = pinecone.Index(index_name)
+
+
+# data models
+class SearchResult(BaseModel):
+    """Search result."""
+
+    id: int
+    title: str
+    text: str
+
+
+class SearchResponse(BaseModel):
+    """Search response."""
+
+    q: str
+    session: int
+    answer: str
+    results: list[SearchResult]
+
+
+@app.middleware("http")
+async def log_exceptions_middleware(request: Request, call_next):
+    """Log exceptions."""
+    try:
+        return await call_next(request)
+    except Exception:
+        body = await request.body()
+        logger.error(
+            traceback.format_exc(),
+            extra={
+                "url": request.url,
+                "method": request.method,
+                # "headers": request.headers,
+                "body": body,
+            },
+        )
+        return Response(status_code=500, content="Internal Server Error")
+
+
+@app.get("/search")
+async def search(q: str | None = Query(default=None, max_length=100)) -> SearchResponse:
+    """Search."""
+    # get query embedding
+    logger.info("get embedding", extra={"q": q})
+    embed_response = openai.Embedding.create(input=[q], engine=embedding_model)
+    embedding = embed_response["data"][0]["embedding"]
+    # query index
+    logger.info("query index", extra={"q": q})
+    query_response = index.query(embedding, top_k=5, include_metadata=True)
+    # get prompt
+    logger.info("get prompt", extra={"q": q})
+    contexts = [res["metadata"]["context"] for res in query_response["matches"]]
+    prompt = _get_prompt(q, contexts)
+    # get answer
+    logger.info("get answer", extra={"q": q})
+    answer_response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=prompt,
+        temperature=0,
+        max_tokens=400,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
+        stop=None,
+    )
+    answer = answer_response["choices"][0]["text"].strip()
+    response = SearchResponse(
+        q=q,
+        session=random.getrandbits(32),
+        answer=answer,
+        results=[
+            SearchResult(
+                id=res["id"],
+                title=res["metadata"]["thread"],
+                text=res["metadata"]["context"],
+            )
+            for res in query_response["matches"]
+        ],
+    )
+    logger.info("search", extra={"q": q, "response": response.dict()})
+    return response
+
+
+def _get_prompt(query, contexts):
+    def _get_prompt_for_contexts(ctxs):
+        return (
+            "Answer the question based on the context below.\n\n"
+            + "Context:\n"
+            + "\n\n---\n\n".join(ctxs)
+            + f"\n\nQuestion: {query}\nAnswer:"
+        )
+
+    n_contexts = 0
+    while (
+        n_contexts < len(contexts)
+        and len(_get_prompt_for_contexts(contexts[0 : n_contexts + 1])) < prompt_limit
+    ):
+        n_contexts += 1
+    return _get_prompt_for_contexts(contexts[0:n_contexts])
+
+
+class Rating(IntEnum):
+    """Rating."""
+
+    UP = 1
+    DOWN = -1
+
+
+@app.post("/rate")
+async def rate(session: int, user: str, result: int, rating: Rating) -> None:
+    """Rate."""
+    logger.info(
+        "rate",
+        extra={"session": session, "user": user, "result": result, "rating": rating},
+    )
+    return None
