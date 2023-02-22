@@ -1,4 +1,4 @@
-name: server
+name: ilc-server
 channels:
   - conda-forge
   - defaults
