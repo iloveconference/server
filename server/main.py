@@ -140,10 +140,17 @@ class Rating(IntEnum):
 
 
 @app.post("/rate")
-async def rate(session: int, user: str, result: int, rating: Rating) -> None:
+async def rate(session: int, user: str, result: int, rating: Rating) -> Response:
     """Rate."""
     logger.info(
         "rate",
         extra={"session": session, "user": user, "result": result, "rating": rating},
     )
-    return None
+    return Response(status_code=201)
+
+
+@app.get("/health")
+async def health() -> Response:
+    """Health check."""
+    logger.info("health")
+    return Response(status_code=200)
