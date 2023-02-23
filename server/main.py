@@ -152,5 +152,5 @@ async def rate(session: int, user: str, result: int, rating: Rating) -> Response
 @app.get("/health")
 async def health() -> Response:
     """Health check."""
-    logger.info("health")
-    return Response(status_code=200)
+    # logger.info("health")
+    return Response(status_code=200, content="OK")
