@@ -38,13 +38,16 @@ embedding_model = "text-embedding-ada-002"
 prompt_limit = 1000  # 3750
 
 # init pinecone
-index_name = "openai-ml-qa"
+index_name = "conf-ada-002"
 # initialize connection to pinecone (get API key at app.pinecone.io)
 pinecone.init(
     api_key=pinecone_key,
     environment="us-west1-gcp",  # may be different, check at app.pinecone.io
 )
 index = pinecone.Index(index_name)
+
+# other constants
+search_limit = 20
 
 
 # data models
@@ -53,6 +56,10 @@ class SearchResult(BaseModel):
 
     id: int
     title: str
+    author: str
+    year: str
+    month: str
+    url: str
     text: str
 
 
@@ -97,11 +104,11 @@ async def search(q: str = Query(max_length=100)) -> SearchResponse:
     embedding = embed_response["data"][0]["embedding"]
     # query index
     logger.info("query index", extra={"q": q})
-    query_response = index.query(embedding, top_k=5, include_metadata=True)
+    query_response = index.query(embedding, top_k=search_limit, include_metadata=True)
     # get prompt
     logger.info("get prompt", extra={"q": q})
-    contexts = [res["metadata"]["context"] for res in query_response["matches"]]
-    prompt = get_prompt(q, contexts, prompt_limit)
+    texts = [res["metadata"]["text"] for res in query_response["matches"]]
+    prompt = get_prompt(q, texts, prompt_limit)
     # get answer
     logger.info("get answer", extra={"q": q})
     answer_response = openai.Completion.create(
@@ -122,8 +129,12 @@ async def search(q: str = Query(max_length=100)) -> SearchResponse:
         results=[
             SearchResult(
                 id=res["id"],
-                title=res["metadata"]["thread"],
-                text=res["metadata"]["context"],
+                title=res["metadata"]["title"],
+                text=res["metadata"]["text"],
+                author=res["metadata"]["author"],
+                year=res["metadata"]["year"],
+                month=res["metadata"]["month"],
+                url=res["metadata"]["url"],
             )
             for res in query_response["matches"]
         ],
