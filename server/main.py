@@ -8,7 +8,7 @@ from enum import IntEnum
 from typing import Awaitable
 from typing import Callable
 
-import boto3
+import boto3  # type: ignore
 import openai
 import pinecone  # type: ignore
 from dotenv import load_dotenv

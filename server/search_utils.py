@@ -1,7 +1,10 @@
 """Search utility functions."""
 
+from typing import Any
+from typing import Tuple
 
-def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> [str, int]:
+
+def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> Tuple[str, int]:
     """Get prompt for query and contexts."""
 
     def _get_prompt_for_contexts(ctxs: list[str]) -> str:
@@ -22,7 +25,7 @@ def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> [str, int]
 
 
 def log_metrics(
-    cloudwatch: any,
+    cloudwatch: Any,
     metric_namespace: str,
     metric_name: str,
     embed_secs: float,
