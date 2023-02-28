@@ -1,7 +1,13 @@
 """Search utility functions."""
 
+import logging
 from typing import Any
 from typing import Tuple
+
+import botocore  # type: ignore
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> Tuple[str, int]:
@@ -36,43 +42,49 @@ def log_metrics(
     answer_len: int,
 ) -> None:
     """Log metrics to CloudWatch."""
-    cloudwatch.put_metric_data(
-        Namespace=metric_namespace,
-        MetricData=[
-            {
-                "MetricName": f"{metric_name}_embed_seconds",
-                "Value": embed_secs,
-                "Unit": "Seconds",
-            },
-            {
-                "MetricName": f"{metric_name}_index_seconds",
-                "Value": index_secs,
-                "Unit": "Seconds",
-            },
-            {
-                "MetricName": f"{metric_name}_answer_seconds",
-                "Value": answer_secs,
-                "Unit": "Seconds",
-            },
-            {
-                "MetricName": f"{metric_name}_prompt_length",
-                "Value": prompt_len,
-                "Unit": "Count",
-            },
-            {
-                "MetricName": f"{metric_name}_prompt_contexts",
-                "Value": n_contexts,
-                "Unit": "Count",
-            },
-            {
-                "MetricName": f"{metric_name}_answer_length",
-                "Value": answer_len,
-                "Unit": "Count",
-            },
-            {
-                "MetricName": f"{metric_name}_hits",
-                "Value": 1,
-                "Unit": "Count",
-            },
-        ],
-    )
+    try:
+        cloudwatch.put_metric_data(
+            Namespace=metric_namespace,
+            MetricData=[
+                {
+                    "MetricName": f"{metric_name}_embed_seconds",
+                    "Value": embed_secs,
+                    "Unit": "Seconds",
+                },
+                {
+                    "MetricName": f"{metric_name}_index_seconds",
+                    "Value": index_secs,
+                    "Unit": "Seconds",
+                },
+                {
+                    "MetricName": f"{metric_name}_answer_seconds",
+                    "Value": answer_secs,
+                    "Unit": "Seconds",
+                },
+                {
+                    "MetricName": f"{metric_name}_prompt_length",
+                    "Value": prompt_len,
+                    "Unit": "Count",
+                },
+                {
+                    "MetricName": f"{metric_name}_prompt_contexts",
+                    "Value": n_contexts,
+                    "Unit": "Count",
+                },
+                {
+                    "MetricName": f"{metric_name}_answer_length",
+                    "Value": answer_len,
+                    "Unit": "Count",
+                },
+                {
+                    "MetricName": f"{metric_name}_hits",
+                    "Value": 1,
+                    "Unit": "Count",
+                },
+            ],
+        )
+    except (
+        botocore.exceptions.ClientError,
+        botocore.exceptions.ParamValidationError,
+    ) as error:
+        logger.error("cloudwatch", extra={"error": error})

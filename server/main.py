@@ -12,6 +12,7 @@ import boto3  # type: ignore
 import openai
 import pinecone  # type: ignore
 from dotenv import load_dotenv
+from fastapi import BackgroundTasks
 from fastapi import FastAPI
 from fastapi import Query
 from pydantic import BaseModel
@@ -102,7 +103,10 @@ async def log_exceptions_middleware(
 
 
 @app.get("/search")
-async def search(q: str = Query(max_length=100)) -> SearchResponse:
+async def search(
+    q: str = Query(max_length=100),
+    background_tasks: BackgroundTasks = BackgroundTasks(),  # noqa: B008
+) -> SearchResponse:
     """Search."""
     # get query embedding
     start = time.perf_counter()
@@ -156,7 +160,8 @@ async def search(q: str = Query(max_length=100)) -> SearchResponse:
     )
     logger.info("search", extra={"q": q, "response": response.dict()})
     if cloudwatch:
-        log_metrics(
+        background_tasks.add_task(
+            log_metrics,
             cloudwatch,
             metric_namespace,
             "search",
