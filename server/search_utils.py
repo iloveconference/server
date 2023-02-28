@@ -1,7 +1,7 @@
 """Search utility functions."""
 
 
-def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> str:
+def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> [str, int]:
     """Get prompt for query and contexts."""
 
     def _get_prompt_for_contexts(ctxs: list[str]) -> str:
@@ -18,4 +18,58 @@ def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> str:
         and len(_get_prompt_for_contexts(contexts[0 : n_contexts + 1])) < prompt_limit
     ):
         n_contexts += 1
-    return _get_prompt_for_contexts(contexts[0:n_contexts])
+    return _get_prompt_for_contexts(contexts[0:n_contexts]), n_contexts
+
+
+def log_metrics(
+    cloudwatch: any,
+    metric_namespace: str,
+    metric_name: str,
+    embed_secs: float,
+    index_secs: float,
+    answer_secs: float,
+    prompt_len: int,
+    n_contexts: int,
+    answer_len: int,
+) -> None:
+    """Log metrics to CloudWatch."""
+    cloudwatch.put_metric_data(
+        Namespace=metric_namespace,
+        MetricData=[
+            {
+                "MetricName": f"{metric_name}_embed_seconds",
+                "Value": embed_secs,
+                "Unit": "Seconds",
+            },
+            {
+                "MetricName": f"{metric_name}_index_seconds",
+                "Value": index_secs,
+                "Unit": "Seconds",
+            },
+            {
+                "MetricName": f"{metric_name}_answer_seconds",
+                "Value": answer_secs,
+                "Unit": "Seconds",
+            },
+            {
+                "MetricName": f"{metric_name}_prompt_length",
+                "Value": prompt_len,
+                "Unit": "Count",
+            },
+            {
+                "MetricName": f"{metric_name}_prompt_contexts",
+                "Value": n_contexts,
+                "Unit": "Count",
+            },
+            {
+                "MetricName": f"{metric_name}_answer_length",
+                "Value": answer_len,
+                "Unit": "Count",
+            },
+            {
+                "MetricName": f"{metric_name}_hits",
+                "Value": 1,
+                "Unit": "Count",
+            },
+        ],
+    )

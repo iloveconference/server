@@ -2,11 +2,13 @@
 import logging.config
 import os
 import random
+import time
 import traceback
 from enum import IntEnum
 from typing import Awaitable
 from typing import Callable
 
+import boto3
 import openai
 import pinecone  # type: ignore
 from dotenv import load_dotenv
@@ -17,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from server.search_utils import get_prompt
+from server.search_utils import log_metrics
 
 
 # init environment
@@ -35,7 +38,7 @@ app = FastAPI(debug=debug)
 # init openai
 openai.api_key = openai_key
 embedding_model = "text-embedding-ada-002"
-prompt_limit = 1000  # 3750
+prompt_limit = 2000  # 3750
 
 # init pinecone
 index_name = "conf-ada-002"
@@ -46,8 +49,13 @@ pinecone.init(
 )
 index = pinecone.Index(index_name)
 
+# init metrics
+metric_namespace = os.environ.get("METRIC_NAMESPACE", "")
+cloudwatch = boto3.client("cloudwatch") if metric_namespace else None
+
 # other constants
 search_limit = 20
+max_answer_tokens = 500
 
 
 # data models
@@ -97,31 +105,38 @@ async def log_exceptions_middleware(
 async def search(q: str = Query(max_length=100)) -> SearchResponse:
     """Search."""
     # get query embedding
-    logger.info("get embedding", extra={"q": q})
+    start = time.perf_counter()
     embed_response = openai.Embedding.create(
         input=[q], engine=embedding_model
     )  # type: ignore
+    embed_secs = time.perf_counter() - start
     embedding = embed_response["data"][0]["embedding"]
+
     # query index
-    logger.info("query index", extra={"q": q})
+    start = time.perf_counter()
     query_response = index.query(embedding, top_k=search_limit, include_metadata=True)
+    index_secs = time.perf_counter() - start
+
     # get prompt
-    logger.info("get prompt", extra={"q": q})
     texts = [res["metadata"]["text"] for res in query_response["matches"]]
-    prompt = get_prompt(q, texts, prompt_limit)
+    prompt, n_contexts = get_prompt(q, texts, prompt_limit)
+
     # get answer
-    logger.info("get answer", extra={"q": q})
+    start = time.perf_counter()
     answer_response = openai.Completion.create(
         engine="text-davinci-003",
         prompt=prompt,
         temperature=0,
-        max_tokens=400,
+        max_tokens=max_answer_tokens,
         top_p=1,
         frequency_penalty=0,
         presence_penalty=0,
         stop=None,
     )  # type: ignore
+    answer_secs = time.perf_counter() - start
     answer = answer_response["choices"][0]["text"].strip()
+
+    # create response
     response = SearchResponse(
         q=q,
         session=random.getrandbits(32),
@@ -140,6 +155,18 @@ async def search(q: str = Query(max_length=100)) -> SearchResponse:
         ],
     )
     logger.info("search", extra={"q": q, "response": response.dict()})
+    if cloudwatch:
+        log_metrics(
+            cloudwatch,
+            metric_namespace,
+            "search",
+            embed_secs,
+            index_secs,
+            answer_secs,
+            len(prompt),
+            n_contexts,
+            len(answer),
+        )
     return response
 
 
