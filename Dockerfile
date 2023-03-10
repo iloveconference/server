@@ -25,7 +25,7 @@ FROM python-base as builder-base
 RUN apt-get update && apt-get install --no-install-recommends -y curl build-essential
 
 # install poetry
-RUN curl -sSL https://install.python-poetry.org | python3 -
+RUN curl -sSL https://install.python-poetry.org | python3 - --version 1.4.0
 
 # copy project requirement files here to ensure they will be cached.
 WORKDIR $PYSETUP_PATH
