@@ -29,15 +29,25 @@
 
 ## Installation
 
-You can install _Server_ via [pip] from [PyPI]:
+Are all of these steps needed for an install?
 
 ```console
-$ pip install server
+create a conda env with python=3.10
+pip install --user pipx
+curl -sSL https://install.python-poetry.org | python3 - --version 1.4.0
+pipx install nox
+pipx inject nox nox-poetry
+poetry install
+nox -s pre-commit -- install
+pre-commit run -a
+nox
 ```
 
 ## Usage
 
-Please see the [Command-line Reference] for details.
+```console
+uvicorn src.server.main:app --reload
+```
 
 ## Contributing
 
