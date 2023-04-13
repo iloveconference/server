@@ -10,13 +10,15 @@ import botocore  # type: ignore
 logger = logging.getLogger(__name__)
 
 
-def get_prompt(query: str, contexts: list[str], prompt_limit: int) -> Tuple[str, int]:
+def get_prompt(
+    prompt: str, query: str, contexts: list[str], prompt_limit: int
+) -> Tuple[str, int]:
     """Get prompt for query and contexts."""
 
     def _get_prompt_for_contexts(ctxs: list[str]) -> str:
         return (
-            "Answer the question based on the context below.\n\n"
-            + "Context:\n"
+            prompt
+            + "\n\nContext:\n"
             + "\n\n---\n\n".join(ctxs)
             + f"\n\nQuestion: {query}\nAnswer:"
         )

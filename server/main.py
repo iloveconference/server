@@ -39,7 +39,7 @@ app = FastAPI(debug=debug)
 # init openai
 openai.api_key = openai_key
 embedding_model = "text-embedding-ada-002"
-prompt_limit = 2000  # 3750
+prompt_limit = 3000  # 3750
 
 # init pinecone
 index_name = "conf-ada-002"
@@ -57,6 +57,11 @@ cloudwatch = boto3.client("cloudwatch") if metric_namespace else None
 # other constants
 search_limit = 20
 max_answer_tokens = 500
+role_content = "You are an apostle of the Church of Jesus Christ of Latter-day Saints"
+prompt_content = (
+    "Answer the question as truthfully as possible using the provided context, "
+    + 'and if answer is not contained within the text below, say "Sorry, I don\'t know".'
+)
 
 
 # data models
@@ -123,22 +128,27 @@ async def search(
 
     # get prompt
     texts = [res["metadata"]["text"] for res in query_response["matches"]]
-    prompt, n_contexts = get_prompt(q, texts, prompt_limit)
+    prompt, n_contexts = get_prompt(prompt_content, q, texts, prompt_limit)
 
     # get answer
     start = time.perf_counter()
-    answer_response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        temperature=0,
+    answer_response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[
+            {
+                "role": "system",
+                "content": role_content,
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
         max_tokens=max_answer_tokens,
-        top_p=1,
         frequency_penalty=0,
         presence_penalty=0,
         stop=None,
     )  # type: ignore
     answer_secs = time.perf_counter() - start
-    answer = answer_response["choices"][0]["text"].strip()
+    answer = answer_response["choices"][0]["message"]["content"].strip()
 
     # create response
     response = SearchResponse(
@@ -153,12 +163,22 @@ async def search(
                 author=res["metadata"]["author"],
                 year=res["metadata"]["year"],
                 month=res["metadata"]["month"],
-                url=res["metadata"]["url"],
+                url=f'{res["metadata"]["url"]}#{res["metadata"]["anchor"]}'
+                if "anchor" in res["metadata"] and res["metadata"]["anchor"]
+                else res["metadata"]["url"],
             )
             for res in query_response["matches"]
         ],
     )
-    logger.info("search", extra={"q": q, "response": response.dict()})
+
+    logger.info(
+        "search",
+        extra={
+            "role": role_content,
+            "prefix": prompt_content,
+            "response": response.dict(),
+        },
+    )
     if cloudwatch:
         background_tasks.add_task(
             log_metrics,
