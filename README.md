@@ -25,28 +25,32 @@
 
 ## Requirements
 
-- TODO
+- python 3.10
+- Poetry: `curl -sSL https://install.python-poetry.org | python3 - --version 1.4.0`
+- pipx: `pip install --user pipx`
+- nox: `pipx install nox && pipx inject nox nox-poetry`
 
 ## Installation
 
-Are all of these steps needed for an install?
-
 ```console
-create a conda env with python=3.10
-pip install --user pipx
-curl -sSL https://install.python-poetry.org | python3 - --version 1.4.0
-pipx install nox
-pipx inject nox nox-poetry
 poetry install
-nox -s pre-commit -- install
-pre-commit run -a
-nox
+python -m spacy download en_core_web_sm
 ```
 
 ## Usage
 
 ```console
 uvicorn src.server.main:app --reload
+```
+
+## Development
+
+These command-line utilities check code quality.
+
+```console
+pre-commit run -a
+pytest
+nox
 ```
 
 ## Contributing
