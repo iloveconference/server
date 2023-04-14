@@ -195,19 +195,35 @@ async def search(
     return response
 
 
-class Rating(IntEnum):
-    """Rating."""
+class RatingScore(IntEnum):
+    """Valid rating score."""
 
     UP = 1
+    UP2 = 2
     DOWN = -1
+    DOWN2 = -2
+
+
+class Rating(BaseModel):
+    """Rating."""
+
+    session: int
+    user: int
+    result: int
+    score: RatingScore
 
 
 @app.post("/rate")
-async def rate(session: int, user: str, result: int, rating: Rating) -> Response:
+async def rate(rating: Rating) -> Response:
     """Rate."""
     logger.info(
         "rate",
-        extra={"session": session, "user": user, "result": result, "rating": rating},
+        extra={
+            "session": rating.session,
+            "user": rating.user,
+            "result": rating.result,
+            "score": rating.score,
+        },
     )
     return Response(status_code=201)
 
