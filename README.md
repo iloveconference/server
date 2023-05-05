@@ -19,12 +19,10 @@
 [pre-commit]: https://github.com/pre-commit/pre-commit
 [black]: https://github.com/psf/black
 
-## Features
-
-- TODO
-
 ## Requirements
 
+- OpenAI API account: https://platform.openai.com/
+- Pinecone account: https://www.pinecone.io/
 - python 3.10
 - Poetry: `curl -sSL https://install.python-poetry.org | python3 - --version 1.4.0`
 - pipx: `pip install --user pipx`
@@ -35,6 +33,14 @@
 ```console
 poetry install
 python -m spacy download en_core_web_sm
+```
+
+create a `.env` file with the following variables:
+
+```console
+OPENAI_KEY=your_openai_api_key (found on API keys page)
+OPENAI_ORG=your_openai_org (found on Settings page)
+PINECONE_KEY=your_pinecone_api_key (found on API keys page)
 ```
 
 ## Usage
