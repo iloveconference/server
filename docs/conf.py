@@ -1,4 +1,5 @@
 """Sphinx configuration."""
+
 project = "Server"
 author = "Dallan Quass"
 copyright = "2023, Dallan Quass"

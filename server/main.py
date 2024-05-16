@@ -1,4 +1,5 @@
 """Server."""
+
 import logging.config
 import os
 import random
@@ -163,9 +164,11 @@ async def search(
                 author=res["metadata"]["author"],
                 year=res["metadata"]["year"],
                 month=res["metadata"]["month"],
-                url=f'{res["metadata"]["url"]}#{res["metadata"]["anchor"]}'
-                if "anchor" in res["metadata"] and res["metadata"]["anchor"]
-                else res["metadata"]["url"],
+                url=(
+                    f'{res["metadata"]["url"]}#{res["metadata"]["anchor"]}'
+                    if "anchor" in res["metadata"] and res["metadata"]["anchor"]
+                    else res["metadata"]["url"]
+                ),
             )
             for res in query_response["matches"]
         ],
