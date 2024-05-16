@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks
 from fastapi import FastAPI
 from fastapi import Query
-from pinecone.grpc import PineconeGRPC
+from pinecone.grpc import PineconeGRPC  # type: ignore
 from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import Response
