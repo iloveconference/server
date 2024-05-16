@@ -42,11 +42,11 @@ embedding_model = "text-embedding-ada-002"
 prompt_limit = 3000  # 3750
 
 # init pinecone
-index_name = "conf-ada-002"
+index_name = "conf-ada-002-svrless"
 # initialize connection to pinecone (get API key at app.pinecone.io)
 pinecone.init(
     api_key=pinecone_key,
-    environment="us-west1-gcp",  # may be different, check at app.pinecone.io
+    environment="us-east-1",  # may be different, check at app.pinecone.io
 )
 index = pinecone.Index(index_name)
 
