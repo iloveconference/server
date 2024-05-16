@@ -30,6 +30,7 @@ openai = {extras = ["datalib"], version = "^0.27.0"}
 pinecone-client = {extras = ["grpc"], version = "^2.2.1"}
 spacy = "^3.5.0"
 boto3 = "^1.26.111"
+urllib3 = ">=1.26.18"
 
 [tool.poetry.dev-dependencies]
 Pygments = ">=2.10.0"
