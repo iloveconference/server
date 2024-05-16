@@ -27,7 +27,7 @@ uvicorn = {extras = ["standard"], version = "^0.20.0"}
 python-json-logger = "^2.0.6"
 python-dotenv = "^0.21.1"
 openai = {extras = ["datalib"], version = "^0.27.0"}
-pinecone-client = {extras = ["grpc"], version = "^2.2.1"}
+pinecone-client = {extras = ["grpc"], version = "^3.0.0"}
 spacy = "^3.5.0"
 boto3 = "^1.26.111"
 
