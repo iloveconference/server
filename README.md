@@ -46,7 +46,7 @@ PINECONE_KEY=your_pinecone_api_key (found on API keys page)
 ## Usage
 
 ```console
-uvicorn src.server.main:app --reload
+uvicorn server.main:app --reload
 ```
 
 ## Development
