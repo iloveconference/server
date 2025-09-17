@@ -131,7 +131,7 @@ async def search(
     # get answer
     start = time.perf_counter()
     answer_response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
@@ -139,8 +139,9 @@ async def search(
             },
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
-        max_tokens=max_answer_tokens,
+        temperature=0.0,
+        # max_tokens=max_answer_tokens,
+        max_completion_tokens=max_answer_tokens,
         frequency_penalty=0,
         presence_penalty=0,
         stop=None,
