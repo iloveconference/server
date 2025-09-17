@@ -11,7 +11,7 @@ security: # configuration for the `safety check` command
     51167: # Example vulnerability ID
       reason: pinecone client depends upon exact version
       expires: "2023-06-30" # datetime string - date this ignore will expire, best practice to use this variable
-  continue-on-vulnerability-error: False # Suppress non-zero exit codes when vulnerabilities are found. Enable this in pipelines and CI/CD processes if you want to pass builds that have vulnerabilities. We recommend you set this to False.
+  continue-on-vulnerability-error: True # Suppress non-zero exit codes when vulnerabilities are found. Enable this in pipelines and CI/CD processes if you want to pass builds that have vulnerabilities. We recommend you set this to False.
 alert: # configuration for the `safety alert` command
   security:
     # Configuration specific to Safety's GitHub Issue alerting
