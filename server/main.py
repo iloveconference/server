@@ -66,7 +66,7 @@ prompt_content = (
 class SearchResult(BaseModel):
     """Search result."""
 
-    id: int
+    id: str
     title: str
     author: str
     year: str
@@ -122,6 +122,7 @@ async def search(
     # query index
     start = time.perf_counter()
     query_response = index.query(embedding, top_k=search_limit, include_metadata=True)
+    logger.info("Query response", extra={"query_response": query_response})
     index_secs = time.perf_counter() - start
 
     # get prompt
