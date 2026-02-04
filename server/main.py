@@ -10,11 +10,11 @@ from typing import Awaitable
 from typing import Callable
 
 import boto3  # type: ignore
-import openai
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks
 from fastapi import FastAPI
 from fastapi import Query
+from openai import OpenAI
 from pinecone.grpc import PineconeGRPC  # type: ignore
 from pydantic import BaseModel
 from starlette.requests import Request
@@ -38,7 +38,7 @@ debug = os.environ.get("DEBUG", "false").lower() == "true"
 app = FastAPI(debug=debug)
 
 # init openai
-openai.api_key = openai_key
+openai_client = OpenAI(api_key=openai_key)
 embedding_model = "text-embedding-ada-002"
 prompt_limit = 3000  # 3750
 
@@ -113,11 +113,9 @@ async def search(
     """Search."""
     # get query embedding
     start = time.perf_counter()
-    embed_response = openai.Embedding.create(
-        input=[q], engine=embedding_model
-    )  # type: ignore
+    embed_response = openai_client.embeddings.create(input=[q], model=embedding_model)
     embed_secs = time.perf_counter() - start
-    embedding = embed_response["data"][0]["embedding"]
+    embedding = embed_response.data[0].embedding
 
     # query index
     start = time.perf_counter()
@@ -131,24 +129,17 @@ async def search(
 
     # get answer
     start = time.perf_counter()
-    answer_response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": role_content,
-            },
+    answer_response = openai_client.responses.create(
+        model="gpt-5-mini",
+        input=[
+            {"role": "system", "content": role_content},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.0,
-        # max_tokens=max_answer_tokens,
-        max_completion_tokens=max_answer_tokens,
-        frequency_penalty=0,
-        presence_penalty=0,
-        stop=None,
-    )  # type: ignore
+        reasoning={"effort": "low"},
+        max_output_tokens=max_answer_tokens,
+    )
     answer_secs = time.perf_counter() - start
-    answer = answer_response["choices"][0]["message"]["content"].strip()
+    answer = answer_response.output_text.strip()
 
     # create response
     response = SearchResponse(
