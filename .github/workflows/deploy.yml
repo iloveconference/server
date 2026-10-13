@@ -1,0 +1,127 @@
+name: Deploy
+
+# Reusable workflow that deploys stack "ilc" (template.yaml) to us-west-2. tests.yml calls it
+# after the tests pass on a push to main:
+#
+#   deploy:
+#     needs: [tests]
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#     permissions:
+#       id-token: write
+#       contents: read
+#     uses: ./.github/workflows/deploy.yml
+#
+# The calling job must grant id-token: write, because a called workflow can only lower its
+# permissions. Neither job may use a GitHub "environment": that changes the OIDC token's sub
+# claim, which ilc-server-deploy requires to be repo:iloveconference/server:ref:refs/heads/main.
+#
+# Repository variables (Settings > Secrets and variables > Actions > Variables), from the
+# outputs of stacks ilc-github and ilc-edge (scripts/bootstrap.sh prints them):
+#   AWS_SERVER_DEPLOY_ROLE_ARN, AWS_CFN_EXEC_ROLE_ARN, SAM_ARTIFACTS_BUCKET, CERTIFICATE_ARN,
+#   PERMISSIONS_BOUNDARY_ARN
+
+on:
+  workflow_call:
+
+jobs:
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    concurrency:
+      group: deploy-server
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAM_CLI_TELEMETRY: "0"
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: |
+          pipx install --pip-args=--constraint=${{ github.workspace }}/.github/workflows/constraints.txt poetry
+          pipx inject --pip-args=--constraint=${{ github.workspace }}/.github/workflows/constraints.txt poetry poetry-plugin-export
+          poetry --version
+
+      - name: Export requirements.txt
+        run: poetry export --without-hashes --format requirements.txt --output requirements.txt
+
+      - name: Set up the AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+          version: "1.168.0"
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Native arm64 build (no container). It runs before the job has AWS credentials, so
+      # nothing a dependency runs at install time can see them.
+      - name: Build
+        run: sam build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_SERVER_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+
+      # PerClientDailyLimit and GlobalDailyLimit aren't passed, so they keep the values of the
+      # last deploy (the template defaults unless scripts/deploy-manual.sh changed them).
+      - name: Deploy
+        env:
+          CFN_EXEC_ROLE_ARN: ${{ vars.AWS_CFN_EXEC_ROLE_ARN }}
+          ARTIFACTS_BUCKET: ${{ vars.SAM_ARTIFACTS_BUCKET }}
+          CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+          PERMISSIONS_BOUNDARY_ARN: ${{ vars.PERMISSIONS_BOUNDARY_ARN }}
+        run: |
+          : "${CFN_EXEC_ROLE_ARN:?Set the AWS_CFN_EXEC_ROLE_ARN repository variable}"
+          : "${ARTIFACTS_BUCKET:?Set the SAM_ARTIFACTS_BUCKET repository variable}"
+          : "${CERTIFICATE_ARN:?Set the CERTIFICATE_ARN repository variable}"
+          : "${PERMISSIONS_BOUNDARY_ARN:?Set the PERMISSIONS_BOUNDARY_ARN repository variable}"
+          sam deploy \
+            --stack-name ilc \
+            --region us-west-2 \
+            --role-arn "$CFN_EXEC_ROLE_ARN" \
+            --s3-bucket "$ARTIFACTS_BUCKET" \
+            --tags project=ilc \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "CertificateArn=$CERTIFICATE_ARN" "PermissionsBoundaryArn=$PERMISSIONS_BOUNDARY_ARN"
+
+      # Retries cover CloudFront still rolling out a distribution change.
+      - name: Smoke test
+        run: |
+          domain="$(aws cloudformation describe-stacks --stack-name ilc --region us-west-2 --output text \
+            --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue | [0]")"
+          echo "Checking https://$domain"
+          for attempt in 1 2 3 4 5 6; do
+            if health="$(curl -fsS --max-time 30 "https://$domain/api/health")" && [[ "$health" == OK ]]; then
+              warm="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$domain/api/warm" || true)"
+              if [[ "$warm" == 204 ]]; then
+                echo "/api/health returned OK and /api/warm returned 204"
+                exit 0
+              fi
+              echo "Attempt $attempt: /api/warm returned ${warm:-no response}, expected 204"
+            else
+              echo "Attempt $attempt: /api/health failed or didn't return OK"
+            fi
+            if [[ "$attempt" -lt 6 ]]; then
+              sleep 20
+            fi
+          done
+          echo "::error::Smoke test failed on https://$domain"
+          exit 1

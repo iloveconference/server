@@ -21,6 +21,8 @@ repos:
         entry: check-yaml
         language: system
         types: [yaml]
+        # syntax only, so CloudFormation tags like !Ref and !Sub are allowed
+        args: [--unsafe]
       - id: darglint
         name: darglint
         entry: darglint
@@ -32,7 +34,7 @@ repos:
         entry: end-of-file-fixer
         language: system
         types: [text]
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
       - id: flake8
         name: flake8
         entry: flake8
@@ -53,14 +55,17 @@ repos:
         entry: pyupgrade
         language: system
         types: [python]
-        args: [--py37-plus]
+        args: [--py312-plus]
       - id: trailing-whitespace
         name: Trim Trailing Whitespace
         entry: trailing-whitespace-fixer
         language: system
         types: [text]
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
   - repo: https://github.com/pre-commit/mirrors-prettier
     rev: v2.6.0
     hooks:
       - id: prettier
+        # The Node.js on GitHub's ubuntu-24.04 runners. Pinned so the hook installs the same
+        # way everywhere: npm 11 refuses to install it ("EALLOWGIT").
+        language_version: 22.23.3
