@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  iloveconference.org edge resources (stack "ilc-edge", us-east-1): the CloudFront certificate,
+  the certificate and CloudFront alarms, and the AWS Budget. CloudFront certificates and the
+  CloudFront/ACM metrics only exist in us-east-1.
+
+# Deployed by hand (see scripts/bootstrap.sh), first without DistributionId, then again with the
+# DistributionId output of stack "ilc" to add the CloudFront 5xx alarm.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: dallan@genefun.com
+    Description: Email address for the ilc-alerts-edge SNS topic and the budget notifications.
+  DistributionId:
+    Type: String
+    Default: ""
+    Description: CloudFront distribution ID (output DistributionId of stack ilc). Leave empty until that stack exists; the 5xx alarm is created only when it is set.
+
+Conditions:
+  HasDistribution: !Not [!Equals [!Ref DistributionId, ""]]
+
+Resources:
+  # DNS validation without HostedZoneId, on purpose. ACM's validation CNAME for a domain is the
+  # same for every certificate in the account, in every Region, so the two CNAMEs that already
+  # exist in the iloveconference.org zone (created for Copilot's certificate and managed outside
+  # CloudFormation) validate this certificate and its renewals too. With a HostedZoneId,
+  # CloudFormation would write those records itself and delete them along with this stack,
+  # breaking renewals of every certificate that shares them. CloudFormation still waits until the
+  # certificate is ISSUED.
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: www.iloveconference.org
+      SubjectAlternativeNames:
+        - iloveconference.org
+      ValidationMethod: DNS
+      Tags:
+        - Key: project
+          Value: ilc
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: ilc-alerts-edge
+      DisplayName: ilc alerts
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # The address must confirm the subscription from the email AWS sends.
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ACM publishes DaysToExpiry about every 12 hours (as seen on this account's existing
+  # certificate), so a one-day period normally holds two data points. TreatMissingData "missing"
+  # lets an occasional gap pass without an email (unlike "breaching"), yet leaves the alarm in
+  # INSUFFICIENT_DATA rather than OK if the metric never arrives at all (unlike "notBreaching"),
+  # so a broken alarm shows in the console. A failed renewal keeps publishing ever-smaller
+  # values, so the threshold still fires.
+  CertificateExpiryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ilc-certificate-days-to-expiry
+      AlarmDescription: The www.iloveconference.org certificate expires in under 30 days, so ACM renewal is failing (check the validation CNAMEs).
+      Namespace: AWS/CertificateManager
+      MetricName: DaysToExpiry
+      Dimensions:
+        - Name: CertificateArn
+          Value: !Ref Certificate
+      Statistic: Minimum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 30
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: missing
+      AlarmActions:
+        - !Ref AlertTopic
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # No requests means no data points, which must not alarm.
+  CloudFront5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasDistribution
+    Properties:
+      AlarmName: ilc-cloudfront-5xx
+      AlarmDescription: More than 5% of iloveconference.org responses were 5xx for 15 minutes.
+      Namespace: AWS/CloudFront
+      MetricName: 5xxErrorRate
+      Dimensions:
+        - Name: DistributionId
+          Value: !Ref DistributionId
+        - Name: Region
+          Value: Global
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # Counts only costs tagged project=ilc, so the cost allocation tag "project" must be active
+  # (Billing > Cost allocation tags). Budgets emails the address directly, without SNS.
+  # Credits are left out so that spend shows up even while promotional credits pay for it.
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: ilc-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 5
+          Unit: USD
+        CostFilters:
+          TagKeyValue:
+            - "user:project$ilc"
+        CostTypes:
+          IncludeCredit: false
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+      ResourceTags:
+        - Key: project
+          Value: ilc
+
+Outputs:
+  CertificateArn:
+    Description: Certificate for the ilc stack's CertificateArn parameter (GitHub variable CERTIFICATE_ARN).
+    Value: !Ref Certificate
+  AlertTopicArn:
+    Description: SNS topic for the us-east-1 alarms.
+    Value: !Ref AlertTopic

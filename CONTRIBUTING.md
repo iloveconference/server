@@ -37,9 +37,10 @@ Request features on the [Issue Tracker].
 
 ## How to set up your development environment
 
-You need Python 3.7+ and the following tools:
+You need Python 3.12 and the following tools
+(the versions CI uses are pinned in `.github/workflows/constraints.txt`):
 
-- [Poetry]
+- [Poetry] with poetry-plugin-export
 - [Nox]
 - [nox-poetry]
 
@@ -50,11 +51,11 @@ $ poetry install
 ```
 
 You can now run an interactive Python session,
-or the command-line interface:
+or the API server on port 8000 (see the README for the `.env` it needs):
 
 ```console
 $ poetry run python
-$ poetry run server
+$ poetry run uvicorn server.main:app --reload
 ```
 
 [poetry]: https://python-poetry.org/

@@ -9,7 +9,6 @@ from textwrap import dedent
 
 import nox
 
-
 try:
     from nox_poetry import Session
     from nox_poetry import session
@@ -24,17 +23,16 @@ except ImportError:
 
 
 package = "server"
-python_versions = ["3.10"]
+python_versions = ["3.12"]
 nox.needs_version = ">= 2021.6.6"
-nox.options.sessions = (
+nox.options.sessions = [
     "pre-commit",
     "safety",
     "mypy",
     "tests",
     "typeguard",
-    "xdoctest",
     "docs-build",
-)
+]
 
 
 def activate_virtualenv_in_precommit_hooks(session: Session) -> None:
@@ -152,7 +150,7 @@ def mypy(session: Session) -> None:
     """Type-check using mypy."""
     args = session.posargs or ["server", "tests", "docs/conf.py"]
     session.install(".")
-    session.install("mypy", "pytest")
+    session.install("mypy", "pytest", "boto3", "boto3-stubs[ssm]")
     session.run("mypy", *args)
     if not session.posargs:
         session.run("mypy", f"--python-executable={sys.executable}", "noxfile.py")
@@ -162,7 +160,8 @@ def mypy(session: Session) -> None:
 def tests(session: Session) -> None:
     """Run the test suite."""
     session.install(".")
-    session.install("coverage[toml]", "pytest", "pygments")
+    # boto3 is provided by the Lambda runtime, so it is only a dev dependency
+    session.install("coverage[toml]", "pytest", "pygments", "boto3")
     try:
         session.run("coverage", "run", "--parallel", "-m", "pytest", *session.posargs)
     finally:
@@ -187,23 +186,8 @@ def coverage(session: Session) -> None:
 def typeguard(session: Session) -> None:
     """Runtime type checking using Typeguard."""
     session.install(".")
-    session.install("pytest", "typeguard", "pygments")
+    session.install("pytest", "typeguard", "pygments", "boto3")
     session.run("pytest", f"--typeguard-packages={package}", *session.posargs)
-
-
-@session(python=python_versions)
-def xdoctest(session: Session) -> None:
-    """Run examples with xdoctest."""
-    if session.posargs:
-        args = [package, *session.posargs]
-    else:
-        args = [f"--modname={package}", "--command=all"]
-        if "FORCE_COLOR" in os.environ:
-            args.append("--colored=1")
-
-    session.install(".")
-    session.install("xdoctest[colors]")
-    session.run("python", "-m", "xdoctest", *args)
 
 
 @session(name="docs-build", python=python_versions[0])
@@ -214,7 +198,7 @@ def docs_build(session: Session) -> None:
         args.insert(0, "--color")
 
     session.install(".")
-    session.install("sphinx", "sphinx-click", "furo", "myst-parser")
+    session.install("sphinx", "furo", "myst-parser")
 
     build_dir = Path("docs", "_build")
     if build_dir.exists():
@@ -228,7 +212,7 @@ def docs(session: Session) -> None:
     """Build and serve the documentation with live reloading on file changes."""
     args = session.posargs or ["--open-browser", "docs", "docs/_build"]
     session.install(".")
-    session.install("sphinx", "sphinx-autobuild", "sphinx-click", "furo", "myst-parser")
+    session.install("sphinx", "sphinx-autobuild", "furo", "myst-parser")
 
     build_dir = Path("docs", "_build")
     if build_dir.exists():

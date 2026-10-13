@@ -11,3 +11,5 @@
 /.env.*
 __pycache__/
 .idea/
+/requirements.txt
+/.aws-sam/

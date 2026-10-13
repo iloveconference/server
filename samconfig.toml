@@ -1,0 +1,18 @@
+# SAM CLI defaults for stack "ilc" (template.yaml). Nothing account-specific lives here: CI
+# (.github/workflows/deploy.yml) and scripts/deploy-manual.sh pass --role-arn, --s3-bucket and
+# the CertificateArn and PermissionsBoundaryArn parameter overrides.
+version = 0.1
+
+[default.global.parameters]
+stack_name = "ilc"
+region = "us-west-2"
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+tags = "project=\"ilc\""
+confirm_changeset = false
+fail_on_empty_changeset = false
+s3_prefix = "ilc"

@@ -1,0 +1,431 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  iloveconference.org deploy plumbing (stack "ilc-github", us-west-2): the SAM artifacts bucket,
+  the permissions boundary for roles in stack "ilc", the CloudFormation service role that deploys
+  that stack, and the role GitHub Actions in iloveconference/server assumes to drive it.
+
+# Deployed once by hand with admin credentials (see scripts/bootstrap.sh). The GitHub OIDC
+# provider already exists in the account and is referenced, not created.
+#
+# Trust chain for a server deploy: GitHub Actions (main of iloveconference/server) assumes
+# ilc-server-deploy, which can only create and execute change sets on stack "ilc" and pass
+# ilc-cfn-exec to CloudFormation. ilc-cfn-exec does the actual work, and every IAM role it can
+# create or change must carry the ilc-permissions-boundary policy.
+
+Resources:
+  # SAM uploads the Lambda zip and the packaged template here. Objects expire after 30 days. The
+  # running function doesn't need its zip, but a rollback re-applies the previous zip, so a
+  # failed deploy more than 30 days after the last successful one can end in
+  # UPDATE_ROLLBACK_FAILED; recover with "aws cloudformation continue-update-rollback
+  # --stack-name ilc --resources-to-skip SearchFunction", then deploy again.
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-artifacts
+            Status: Enabled
+            ExpirationInDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # The most any role in stack "ilc" can ever do, whatever policies it is given.
+  IlcBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ilc-permissions-boundary
+      Description: Permissions boundary for the roles in stack ilc (search function, client deploy).
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Search function role
+          - Sid: FunctionLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ilc-search
+              - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ilc-search:*
+          - Sid: FunctionSecrets
+            Effect: Allow
+            Action: ssm:GetParameters
+            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ilc/prod/*
+          - Sid: FunctionSecretsKey
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+          # Client deploy role
+          - Sid: SiteBucketList
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !Sub arn:${AWS::Partition}:s3:::ilc-*
+          - Sid: SiteObjects
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub arn:${AWS::Partition}:s3:::ilc-*/*
+          - Sid: SiteInvalidations
+            Effect: Allow
+            Action:
+              - cloudfront:CreateInvalidation
+              - cloudfront:GetInvalidation
+            Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+          - Sid: StackOutputs
+            Effect: Allow
+            Action: cloudformation:DescribeStacks
+            Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/ilc/*
+
+  # CloudFormation service role for stack "ilc". The actions come from the handlers' permission
+  # lists of each resource type in template.yaml, after the SAM transform
+  # (aws cloudformation describe-type), minus VPC, KMS key, layer and code signing features that
+  # template.yaml doesn't use. Reads are broad; writes are scoped to ilc-* names.
+  CfnExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ilc-cfn-exec
+      Description: CloudFormation service role that deploys stack ilc (server/template.yaml).
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ilc-stack-resources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CloudFormation runs template.yaml's SAM transform with this role's credentials
+              - Sid: UseSamTransform
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+              # SiteBucket and SiteBucketPolicy
+              - Sid: S3Buckets
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket*
+                  - s3:ListBucket
+                  - s3:GetBucket*
+                  - s3:Get*Configuration
+                  - s3:PutBucket*
+                  - s3:Put*Configuration
+                  - s3:ListTagsForResource
+                  - s3:TagResource
+                  - s3:UntagResource
+                Resource: !Sub arn:${AWS::Partition}:s3:::ilc-*
+              # The function's code package
+              - Sid: S3ReadArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub ${ArtifactsBucket.Arn}/*
+              # SearchFunction, SearchFunctionUrl and the CloudFront invoke permissions
+              - Sid: LambdaFunction
+                Effect: Allow
+                Action:
+                  - lambda:Get*
+                  - lambda:List*
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:PublishVersion
+                  - lambda:PutFunctionConcurrency
+                  - lambda:DeleteFunctionConcurrency
+                  - lambda:PutRuntimeManagementConfig
+                  - lambda:PutFunctionRecursionConfig
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:CreateFunctionUrlConfig
+                  - lambda:UpdateFunctionUrlConfig
+                  - lambda:DeleteFunctionUrlConfig
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:ilc-search
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:ilc-search:*
+              # SearchLogGroup and LogSubscription
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:GetDataProtectionPolicy
+                  - logs:DeleteDataProtectionPolicy
+                  - logs:ListTagsForResource
+                  - logs:ListTagsLogGroup
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:PutSubscriptionFilter
+                  - logs:DeleteSubscriptionFilter
+                  - logs:DescribeSubscriptionFilters
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ilc-search
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/ilc-search:*
+              # AlertTopic and AlertEmailSubscription
+              - Sid: Sns
+                Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:GetDataProtectionPolicy
+                  - sns:ListTagsForResource
+                  - sns:TagResource
+                  - sns:UntagResource
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:GetSubscriptionAttributes
+                  - sns:SetSubscriptionAttributes
+                  - sns:ListSubscriptionsByTopic
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:ilc-*
+              # LambdaErrorsAlarm and LambdaThrottlesAlarm
+              - Sid: Alarms
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:ListTagsForResource
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
+                Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:ilc-*
+              # The distribution's certificate (in us-east-1)
+              - Sid: Certificate
+                Effect: Allow
+                Action: acm:DescribeCertificate
+                Resource: !Sub arn:${AWS::Partition}:acm:us-east-1:${AWS::AccountId}:certificate/*
+              # Creates and reads that IAM can't scope to a resource, and reads of the managed
+              # cache and response headers policies the distribution uses
+              - Sid: AccountWideReadsAndCreates
+                Effect: Allow
+                Action:
+                  - acm:ListCertificates
+                  - cloudfront:CreateDistribution
+                  - cloudfront:CreateFunction
+                  - cloudfront:CreateOriginAccessControl
+                  - cloudfront:CreateOriginRequestPolicy
+                  - cloudfront:GetCachePolicy
+                  - cloudfront:GetCachePolicyConfig
+                  - cloudfront:GetResponseHeadersPolicy
+                  - cloudfront:GetResponseHeadersPolicyConfig
+                  - cloudfront:ListCachePolicies
+                  - cloudfront:ListDistributions
+                  - cloudfront:ListFunctions
+                  - cloudfront:ListOriginAccessControls
+                  - cloudfront:ListOriginRequestPolicies
+                  - cloudfront:ListResponseHeadersPolicies
+                  - cloudwatch:DescribeAlarms
+                  - lambda:ListFunctions
+                  - logs:DescribeIndexPolicies
+                  - logs:DescribeLogGroups
+                  - logs:DescribeResourcePolicies
+                  - sns:ListSubscriptions
+                  - sns:ListTopics
+                Resource: "*"
+        - PolicyName: ilc-stack-cloudfront
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Distribution, SiteFunction, both origin access controls and ApiOriginRequestPolicy.
+              # CloudFront ARNs are global; this account has no other distributions.
+              - Sid: CloudFront
+                Effect: Allow
+                Action:
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:DeleteDistribution
+                  - cloudfront:DescribeFunction
+                  - cloudfront:GetFunction
+                  - cloudfront:PublishFunction
+                  - cloudfront:UpdateFunction
+                  - cloudfront:DeleteFunction
+                  - cloudfront:GetOriginAccessControl
+                  - cloudfront:GetOriginAccessControlConfig
+                  - cloudfront:UpdateOriginAccessControl
+                  - cloudfront:DeleteOriginAccessControl
+                  - cloudfront:GetOriginRequestPolicy
+                  - cloudfront:GetOriginRequestPolicyConfig
+                  - cloudfront:UpdateOriginRequestPolicy
+                  - cloudfront:DeleteOriginRequestPolicy
+                  - cloudfront:ListTagsForResource
+                  - cloudfront:TagResource
+                  - cloudfront:UntagResource
+                Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:*
+        - PolicyName: ilc-stack-iam
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # ClientDeployRole and the SAM-generated function role (ilc-SearchFunctionRole-*).
+              # Every change to a role requires it to carry IlcBoundary, both in the request
+              # (CreateRole, PutRolePermissionsBoundary) and on the role itself (the rest). So
+              # this role can't create an unbounded role, or touch ilc-cfn-exec and
+              # ilc-server-deploy, which have no boundary.
+              - Sid: ManageBoundedRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:PutRolePermissionsBoundary
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:DeleteRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ilc-*
+                Condition:
+                  StringEquals:
+                    iam:PermissionsBoundary: !Ref IlcBoundary
+              - Sid: ReadAndTagRoles
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRoleTags
+                  - iam:TagRole
+                  - iam:UntagRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ilc-*
+              - Sid: KeepBoundaries
+                Effect: Deny
+                Action: iam:DeleteRolePermissionsBoundary
+                Resource: "*"
+              # Only the role SAM generates for SearchFunction, which always carries IlcBoundary.
+              # Not role/ilc-*: Copilot's unbounded ilc-prod-* roles match that, and some trust
+              # Lambda (ilc-prod-CFNExecutionRole is admin-equivalent), so a template could
+              # otherwise run ilc-search as one of them.
+              - Sid: PassFunctionRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/ilc-SearchFunctionRole-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: lambda.amazonaws.com
+              - Sid: PassLogArchiveRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/CWLtoKinesisFirehoseRole
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - logs.amazonaws.com
+                      - !Sub logs.${AWS::Region}.amazonaws.com
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # Assumed by GitHub Actions (.github/workflows/deploy.yml) on pushes to main. The workflow must
+  # not use a GitHub "environment", which would change the token's sub claim.
+  ServerDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ilc-server-deploy
+      Description: Assumed by GitHub Actions on iloveconference/server main to deploy stack ilc.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:iloveconference/server:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-ilc-stack
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DriveIlcStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListStackResources
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/ilc/*
+              # sam deploy --tags puts the stack tags on the change set and the stack.
+              - Sid: TagIlcStack
+                Effect: Allow
+                Action:
+                  - cloudformation:TagResource
+                  - cloudformation:UntagResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/ilc/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/samcli-deploy*/*
+              - Sid: UseSamTransform
+                Effect: Allow
+                Action: cloudformation:CreateChangeSet
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+              - Sid: PassCfnExecRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CfnExecRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Sid: ListArtifacts
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ArtifactsBucket.Arn
+              - Sid: ReadWriteArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub ${ArtifactsBucket.Arn}/*
+      Tags:
+        - Key: project
+          Value: ilc
+
+Outputs:
+  ArtifactsBucketName:
+    Description: SAM artifacts bucket (GitHub variable SAM_ARTIFACTS_BUCKET).
+    Value: !Ref ArtifactsBucket
+  CfnExecRoleArn:
+    Description: CloudFormation service role for stack ilc (GitHub variable AWS_CFN_EXEC_ROLE_ARN).
+    Value: !GetAtt CfnExecRole.Arn
+  ServerDeployRoleArn:
+    Description: Role for the server repo's deploy workflow (GitHub variable AWS_SERVER_DEPLOY_ROLE_ARN).
+    Value: !GetAtt ServerDeployRole.Arn
+  PermissionsBoundaryArn:
+    Description: Permissions boundary for stack ilc's roles (GitHub variable PERMISSIONS_BOUNDARY_ARN).
+    Value: !Ref IlcBoundary

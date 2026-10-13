@@ -1,0 +1,505 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  iloveconference.org (stack "ilc", us-west-2): the static site in a private S3 bucket and the
+  search API in a Lambda function, both behind one CloudFront distribution, plus the client
+  deploy role and the alarms.
+
+# Deployed by .github/workflows/deploy.yml (CI) and scripts/deploy-manual.sh (bootstrap), always
+# with --role-arn ilc-cfn-exec. The bootstrap stacks are edge.yaml (stack ilc-edge, us-east-1:
+# certificate, edge alarms, budget) and github.yaml (stack ilc-github: artifacts bucket, IAM
+# roles, permissions boundary). DNS records are managed outside CloudFormation.
+
+Parameters:
+  CertificateArn:
+    Type: String
+    Description: ACM certificate for www.iloveconference.org and iloveconference.org (output CertificateArn of stack ilc-edge; CloudFront requires us-east-1).
+    AllowedPattern: ^arn:aws:acm:us-east-1:\d{12}:certificate/.+$
+    ConstraintDescription: must be an ACM certificate ARN in us-east-1
+  PermissionsBoundaryArn:
+    Type: String
+    Description: Permissions boundary for every role this stack creates (output PermissionsBoundaryArn of stack ilc-github). ilc-cfn-exec can only create roles that carry it.
+    AllowedPattern: ^arn:aws:iam::\d{12}:policy/.+$
+    ConstraintDescription: must be an IAM managed policy ARN
+  AlertEmail:
+    Type: String
+    Default: dallan@genefun.com
+    Description: Email address subscribed to the ilc-alerts SNS topic.
+  PerClientDailyLimit:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    Description: Searches per client IP (IPv6 /64) per 24 hours (sliding window).
+  GlobalDailyLimit:
+    Type: Number
+    Default: 300
+    MinValue: 1
+    Description: Searches per day across all clients.
+
+Resources:
+  # ---------------------------------------------------------------------------------------------
+  # Static site
+  # ---------------------------------------------------------------------------------------------
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # Only this distribution may read objects. CloudFront gets no s3:ListBucket, so a missing key
+  # is a 403, which the distribution turns into /404.html with status 404.
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${SiteBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  SiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: ilc-site
+        Description: CloudFront signs every request to the site bucket.
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Viewer-request function on the default (S3) behavior only. The rules run in this order:
+  #   1. Host iloveconference.org: 301 to https://www.iloveconference.org + uri + query.
+  #   2. A uri ending in "/" (other than "/"): 301 to the same path without the slash(es), on the
+  #      host the viewer used (www.iloveconference.org in production), keeping the query.
+  #   3. "/" is served from /index.html.
+  #   4. A last path segment without a "." gets ".html" (/search -> /search.html), matching the
+  #      files adapter-static writes with trailingSlash 'never'.
+  # The query string is rebuilt from the querystring object, which holds the values as the viewer
+  # sent them (still percent-encoded); a repeated key has every value in multiValue.
+  SiteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: ilc-site-viewer-request
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Redirects the apex and trailing slashes; maps page URLs to .html objects.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        var CANONICAL_HOST = 'www.iloveconference.org';
+        var APEX_HOST = 'iloveconference.org';
+
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var host = requestHost(request);
+
+          if (host === APEX_HOST) {
+            return redirect('https://' + CANONICAL_HOST + uri + queryString(request.querystring));
+          }
+          if (uri.length > 1 && uri.charAt(uri.length - 1) === '/') {
+            var path = uri.replace(/\/+$/, '') || '/';
+            return redirect('https://' + (host || CANONICAL_HOST) + path + queryString(request.querystring));
+          }
+          if (uri === '/') {
+            request.uri = '/index.html';
+          } else if (uri.slice(uri.lastIndexOf('/') + 1).indexOf('.') === -1) {
+            request.uri = uri + '.html';
+          }
+          return request;
+        }
+
+        // The Host header, lowercased and without a port.
+        function requestHost(request) {
+          var header = request.headers.host;
+          return header ? header.value.toLowerCase().replace(/:\d+$/, '') : '';
+        }
+
+        // "?a=1&a=2&b=" from the querystring object, or "" when there is no query.
+        function queryString(querystring) {
+          var parts = [];
+          for (var key in querystring) {
+            var param = querystring[key];
+            var values = param.multiValue || [param];
+            for (var i = 0; i < values.length; i++) {
+              parts.push(key + '=' + values[i].value);
+            }
+          }
+          return parts.length ? '?' + parts.join('&') : '';
+        }
+
+        function redirect(location) {
+          return {
+            statusCode: 301,
+            statusDescription: 'Moved Permanently',
+            headers: { location: { value: location } }
+          };
+        }
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # ---------------------------------------------------------------------------------------------
+  # Search API
+  # ---------------------------------------------------------------------------------------------
+  # Deleted with the stack on purpose: the name is fixed, so a retained group would make the next
+  # create fail, and the lines that matter are already archived to S3 by LogSubscription.
+  SearchLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: /aws/lambda/ilc-search
+      RetentionInDays: 7
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # The role SAM generates for this function is named ilc-SearchFunctionRole-<suffix>, carries the
+  # permissions boundary, and gets AWSLambdaBasicExecutionRole plus the policy below. ilc-cfn-exec
+  # may pass only roles with that name to Lambda (github.yaml), so renaming this resource needs a
+  # matching change there.
+  SearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ilc-search
+      Description: iloveconference.org search API (FastAPI + Mangum)
+      CodeUri: .
+      Handler: server.lambda_handler.handler
+      Runtime: python3.12
+      Architectures:
+        - arm64
+      MemorySize: 1769
+      Timeout: 55
+      ReservedConcurrentExecutions: 10
+      PermissionsBoundary: !Ref PermissionsBoundaryArn
+      LoggingConfig:
+        LogFormat: Text
+        LogGroup: !Ref SearchLogGroup
+      Environment:
+        Variables:
+          SSM_PREFIX: /ilc/prod/
+          METRIC_NAMESPACE: server_prod
+          RATE_LIMIT_PER_CLIENT: !Ref PerClientDailyLimit
+          RATE_LIMIT_GLOBAL_DAILY: !Ref GlobalDailyLimit
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: ReadSecrets
+              Effect: Allow
+              Action: ssm:GetParameters
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ilc/prod/*
+            # The SecureStrings use the AWS managed aws/ssm key, whose key policy already lets SSM
+            # decrypt for principals in this account. This identity permission is there in case
+            # the key policy alone isn't enough for a role under a permissions boundary.
+            - Sid: DecryptSecretsViaSsm
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+      Tags:
+        project: ilc
+      PropagateTags: true
+
+  # Archive the app's "server.main" JSON log lines to S3 through the existing Firehose, as the
+  # Copilot service's filter did. The pattern is quoted so YAML doesn't read it as a mapping.
+  LogSubscription:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties:
+      FilterName: server
+      LogGroupName: !Ref SearchLogGroup
+      FilterPattern: '{ $.name = "server.main" }'
+      DestinationArn: !Sub arn:${AWS::Partition}:firehose:${AWS::Region}:${AWS::AccountId}:deliverystream/server-logs
+      RoleArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/CWLtoKinesisFirehoseRole
+
+  ApiOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: ilc-api
+        Description: CloudFront signs every request to the search function URL.
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Function URLs need both permissions for CloudFront's signed requests. InvokedViaFunctionUrl
+  # keeps the InvokeFunction grant from allowing any other way to invoke the function.
+  CloudFrontInvokeFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SearchFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+      FunctionUrlAuthType: AWS_IAM
+
+  CloudFrontInvokeFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SearchFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+      InvokedViaFunctionUrl: true
+
+  # No Host header: OAC signs for the function URL's own host name.
+  ApiOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: ilc-api
+        Comment: Query string, User-Agent and the viewer address for the search API.
+        QueryStringsConfig:
+          QueryStringBehavior: all
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - User-Agent
+            - CloudFront-Viewer-Address
+        CookiesConfig:
+          CookieBehavior: none
+
+  # ---------------------------------------------------------------------------------------------
+  # CloudFront
+  # ---------------------------------------------------------------------------------------------
+  # Managed policy IDs (aws cloudfront list-*-policies --type managed):
+  #   658327ea-f89d-4fab-a63d-7e88639e58f6  Managed-CachingOptimized
+  #   4135ea2d-6df8-44a3-9df3-4b5a84be39ad  Managed-CachingDisabled
+  #   67f7725c-6f97-4210-82d7-5512b31e9d03  Managed-SecurityHeadersPolicy
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: iloveconference.org
+        Aliases:
+          - www.iloveconference.org
+          - iloveconference.org
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_All
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+          # https://<id>.lambda-url.us-west-2.on.aws/ -> <id>.lambda-url.us-west-2.on.aws
+          - Id: api
+            DomainName: !Select
+              - 2
+              - !Split ["/", !GetAtt SearchFunctionUrl.FunctionUrl]
+            OriginAccessControlId: !GetAtt ApiOriginAccessControl.Id
+            # One attempt only: a CloudFront retry would run (and pay for) the search twice.
+            ConnectionAttempts: 1
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+              OriginReadTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+          Compress: true
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SiteFunction.FunctionARN
+        CacheBehaviors:
+          # CachingDisabled also means the JSON responses aren't compressed (accepted, ~30 KB).
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: !Ref ApiOriginRequestPolicy
+            ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03
+        # These apply to /api/* too: a 403 or 404 from the function also becomes /404.html.
+        # 429 and 5xx responses pass through unchanged.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 10
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 10
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # ---------------------------------------------------------------------------------------------
+  # Client deploys (GitHub Actions in iloveconference/client, main branch only)
+  # ---------------------------------------------------------------------------------------------
+  ClientDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ilc-client-deploy
+      Description: Assumed by GitHub Actions on iloveconference/client main to upload the site.
+      PermissionsBoundary: !Ref PermissionsBoundaryArn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:iloveconference/client:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-site
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ListSiteBucket
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt SiteBucket.Arn
+              - Sid: WriteSiteObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub ${SiteBucket.Arn}/*
+              - Sid: InvalidateDistribution
+                Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetInvalidation
+                Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+              - Sid: ReadStackOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # ---------------------------------------------------------------------------------------------
+  # Alarms (the CloudFront 5xx and certificate alarms are in edge.yaml, us-east-1)
+  # ---------------------------------------------------------------------------------------------
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: ilc-alerts
+      DisplayName: ilc alerts
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # The address must confirm the subscription from the email AWS sends.
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # Lambda counts unhandled exceptions, timeouts and init failures as errors. Error responses the
+  # app returns itself (500, 503) are successful invocations; ilc-edge's CloudFront 5xx alarm
+  # covers those.
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ilc-lambda-errors
+      AlarmDescription: ilc-search had 3 or more errors in 15 minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SearchFunction
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      Tags:
+        - Key: project
+          Value: ilc
+
+  # Requests rejected because all 10 reserved instances were busy.
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: ilc-lambda-throttles
+      AlarmDescription: ilc-search was throttled (reserved concurrency 10) in the last 5 minutes.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SearchFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      Tags:
+        - Key: project
+          Value: ilc
+
+Outputs:
+  SiteBucketName:
+    Description: S3 bucket that holds the static site (client deploy.sh uploads here).
+    Value: !Ref SiteBucket
+  DistributionId:
+    Description: CloudFront distribution ID (client deploy.sh invalidates it; ilc-edge's DistributionId parameter).
+    Value: !Ref Distribution
+  DistributionDomainName:
+    Description: CloudFront domain name, the target of the Route 53 alias records.
+    Value: !GetAtt Distribution.DomainName
+  FunctionUrl:
+    Description: Lambda function URL (AWS_IAM auth; only CloudFront can call it).
+    Value: !GetAtt SearchFunctionUrl.FunctionUrl
+  ClientDeployRoleArn:
+    Description: Role for the client repo's deploy workflow (GitHub variable AWS_CLIENT_DEPLOY_ROLE_ARN).
+    Value: !GetAtt ClientDeployRole.Arn
