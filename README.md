@@ -94,7 +94,10 @@ Stack `ilc` (`template.yaml`, us-west-2) is the running site. GitHub Actions dep
    - assumes the `ilc-server-deploy` role through GitHub's OIDC provider (no stored AWS keys);
    - runs `sam deploy`: the package goes to the artifacts bucket, and CloudFormation updates stack
      `ilc` through the `ilc-cfn-exec` service role;
-   - checks that `/api/health` returns `OK` and `/api/warm` returns 204 on the CloudFront domain.
+   - checks that `/api/health` returns `OK` and `/api/warm` returns 204 on the CloudFront domain,
+     then runs one real search and checks that it returns an answer and results. The search
+     costs well under a cent and counts toward the day's limits; if it gets a 429, the job only
+     warns. Its query ends in "(deploy smoke test)", so it can be told apart in the log archive.
 
 `deploy.yml` reads five repository variables (Settings > Secrets and variables > Actions >
 Variables), set during the bootstrap below. Don't give either job a GitHub environment: that

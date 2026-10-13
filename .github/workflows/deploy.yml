@@ -102,18 +102,27 @@ jobs:
             --no-fail-on-empty-changeset \
             --parameter-overrides "CertificateArn=$CERTIFICATE_ARN" "PermissionsBoundaryArn=$PERMISSIONS_BOUNDARY_ARN"
 
-      # Retries cover CloudFront still rolling out a distribution change.
+      # Health and warm-up first, with retries that cover CloudFront still rolling out a
+      # distribution change. Then one real search, end to end through CloudFront: the rate limits,
+      # OpenAI and Pinecone. It costs well under a cent and counts toward the day's limits, so it
+      # runs once, without retries. A 429 means the limits work but the day's searches are used
+      # up, so it only warns. The query's "(deploy smoke test)" marks these searches in the log
+      # archive.
       - name: Smoke test
+        env:
+          SMOKE_TEST_QUERY: How can I strengthen my faith in Jesus Christ? (deploy smoke test)
         run: |
           domain="$(aws cloudformation describe-stacks --stack-name ilc --region us-west-2 --output text \
             --query "Stacks[0].Outputs[?OutputKey=='DistributionDomainName'].OutputValue | [0]")"
           echo "Checking https://$domain"
+          ready=
           for attempt in 1 2 3 4 5 6; do
             if health="$(curl -fsS --max-time 30 "https://$domain/api/health")" && [[ "$health" == OK ]]; then
               warm="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "https://$domain/api/warm" || true)"
               if [[ "$warm" == 204 ]]; then
                 echo "/api/health returned OK and /api/warm returned 204"
-                exit 0
+                ready=1
+                break
               fi
               echo "Attempt $attempt: /api/warm returned ${warm:-no response}, expected 204"
             else
@@ -123,5 +132,36 @@ jobs:
               sleep 20
             fi
           done
-          echo "::error::Smoke test failed on https://$domain"
-          exit 1
+          if [[ -z "$ready" ]]; then
+            echo "::error::Smoke test failed on https://$domain"
+            exit 1
+          fi
+
+          status="$(curl -sS -G -o search.json -w '%{http_code}' --max-time 70 \
+            --data-urlencode "q=$SMOKE_TEST_QUERY" "https://$domain/api/search" || true)"
+          if [[ "$status" == 429 ]]; then
+            echo "::warning::The search smoke test was rate limited: $(head -c 300 search.json)"
+            exit 0
+          fi
+          if [[ "$status" != 200 ]]; then
+            echo "::error::/api/search returned ${status:-no response}: $(head -c 300 search.json 2>/dev/null)"
+            exit 1
+          fi
+          python3 - search.json <<'EOF'
+          import json
+          import sys
+
+          response = json.load(open(sys.argv[1]))
+          answer = response.get("answer")
+          results = response.get("results")
+          problems = []
+          if not isinstance(answer, str) or not answer.strip():
+              problems.append("an empty answer")
+          if not isinstance(results, list) or not results:
+              problems.append("no results")
+          if problems:
+              print(f"::error::/api/search returned {' and '.join(problems)}")
+              sys.exit(1)
+          print(f"/api/search returned {len(results)} results; the first is {results[0].get('title')!r}")
+          print(f"Answer: {answer[:300]}")
+          EOF
