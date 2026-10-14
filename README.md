@@ -139,6 +139,40 @@ search limits, so a test deploy can lower them
 (`PER_CLIENT_DAILY_LIMIT=2 GLOBAL_DAILY_LIMIT=3 scripts/deploy-manual.sh`) and a second run without
 them restores 40 and 300. CI keeps whatever values the last deploy set.
 
+## Rotating a secret
+
+Updating the SSM parameter is not enough. `load_secrets()` runs at import, so each Lambda
+execution environment reads the secrets once and keeps them for its lifetime, and the `WarmUp`
+schedule keeps one environment alive indefinitely. After a rotation that environment goes on
+presenting the old value: with a revoked `OPENAI_KEY` every search fails on the embedding call
+with a 401, which the page shows as "Search is temporarily unavailable."
+
+So rotate in two steps. Write the new value:
+
+```console
+aws ssm put-parameter --region us-west-2 --type SecureString --overwrite \
+  --name /ilc/prod/OPENAI_KEY --value "..."
+```
+
+Then force new execution environments by changing the function's configuration, which `sam deploy`
+(or `scripts/deploy-manual.sh`) does as a side effect. Without a deploy to make, any configuration
+change will do, as long as it keeps every variable `template.yaml` sets:
+
+```console
+vars=SSM_PREFIX=/ilc/prod/,METRIC_NAMESPACE=server_prod,SECRETS_ROTATED=$(date +%F)
+aws lambda update-function-configuration --region us-west-2 --function-name ilc-search \
+  --environment "Variables={$vars,RATE_LIMIT_PER_CLIENT=40,RATE_LIMIT_GLOBAL_DAILY=300}"
+```
+
+`--environment` replaces the whole map rather than merging into it, so read the deployed values
+first (`aws lambda get-function-configuration --region us-west-2 --function-name ilc-search`),
+since CI keeps whatever search limits the last deploy set. `SECRETS_ROTATED` is there only to
+make the call a real change, since re-sending identical values can be a no-op; the next
+`sam deploy` drops it.
+
+`/api/warm` doesn't prove a rotation worked, because nothing on that path calls OpenAI. Run a
+search instead, and check the log group for a `"message": "search"` entry rather than a 401.
+
 ## One-time bootstrap
 
 Run these once, in order, from the repo root, with admin credentials for the AWS account.
