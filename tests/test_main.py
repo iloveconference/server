@@ -7,6 +7,7 @@ import subprocess  # noqa: S404
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -39,6 +40,20 @@ def test_warm(invoke: Invoke, services: Services) -> None:
 
     assert response["statusCode"] == 204
     assert response["body"] == ""
+    assert services.paid_calls() == 0
+    services.client_limiter.limit.assert_not_called()
+    services.global_limiter.limit.assert_not_called()
+
+
+def test_warm_up_schedule_event(services: Services) -> None:
+    """The warm-up schedule's event returns at once without reaching the app."""
+    from server.lambda_handler import handler
+
+    response = handler(
+        {"ilc_warm_up": True}, SimpleNamespace(function_name="ilc-search")
+    )
+
+    assert response == {"warm": True}
     assert services.paid_calls() == 0
     services.client_limiter.limit.assert_not_called()
     services.global_limiter.limit.assert_not_called()
