@@ -14,7 +14,9 @@ Routes:
   `title`, `author`, `year`, `month`, `url` and `text`). `q` must be 1–100 characters, or FastAPI
   returns 422.
 - `GET /api/warm` returns 204 with no body and does no paid work. Every page but `/search` calls
-  it when it loads, so Lambda's cold start is over before the visitor's first search.
+  it when it loads, so Lambda's cold start is over before the visitor's first search. On top of
+  that, an EventBridge schedule (`ilc-search-warm-up`) invokes the function every 5 minutes with
+  `{"ilc_warm_up": true}`, which returns at once, so one execution environment normally stays warm.
 - `GET /api/health` returns 200 `OK`.
 
 Before any paid call, a search checks two Upstash rate limits: 40 searches per client in any 24

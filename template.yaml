@@ -221,6 +221,17 @@ Resources:
                   kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
       FunctionUrlConfig:
         AuthType: AWS_IAM
+      # Invoke the function every 5 minutes so one execution environment stays warm and searches
+      # skip the ~4 s cold start. The handler returns at once for this event (lambda_handler.py).
+      # The pages' /api/warm request still covers the rare case of the environment being recycled.
+      Events:
+        WarmUp:
+          Type: Schedule
+          Properties:
+            Name: ilc-search-warm-up
+            Description: Keeps one ilc-search execution environment warm.
+            Schedule: rate(5 minutes)
+            Input: '{"ilc_warm_up": true}'
       Tags:
         project: ilc
       PropagateTags: true
