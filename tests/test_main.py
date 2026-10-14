@@ -107,7 +107,7 @@ def test_search(
         input=["What is faith?"], model="text-embedding-ada-002"
     )
     services.index.query.assert_called_once_with(
-        vector=[0.1, 0.2, 0.3], top_k=20, include_metadata=True, _request_timeout=10
+        vector=[0.1, 0.2, 0.3], top_k=20, include_metadata=True, timeout=10
     )
     answer_kwargs = services.answer_client.responses.create.call_args.kwargs
     assert answer_kwargs["model"] == "gpt-5-mini"
@@ -284,11 +284,11 @@ def test_client_settings() -> None:
     assert main.embed_client.timeout == 10
     assert main.answer_client.timeout == 25
     assert main.answer_client.max_retries == 0
-    pool_kw = (
-        main.index._vector_api.api_client.rest_client.pool_manager.connection_pool_kw
-    )
-    assert pool_kw["retries"].read == 0
-    assert pool_kw["retries"].total == 2
+    # pinecone v10 retries read timeouts and cannot be told not to, so the old
+    # urllib3 read=0 intent is gone; what is left to guarantee is that the attempts
+    # are bounded tightly enough to fit inside the 55s Lambda timeout.
+    assert main.index_retry.max_retries == 1
+    assert main.index_timeout == 10
     assert main.redis._http._client.timeout == httpx.Timeout(2.0)
     assert main.redis._http._retries == 0
     assert main.client_limiter._prefix != main.global_limiter._prefix
@@ -338,6 +338,9 @@ def test_logging_replaces_existing_handlers() -> None:
         import json, logging, sys
         runtime_handler = logging.StreamHandler(sys.stderr)
         logging.getLogger().addHandler(runtime_handler)
+        # pinecone v10 logs "Index client created for host ..." at INFO while the app
+        # is imported; this test is about handler replacement, not third-party chatter.
+        logging.getLogger("pinecone").setLevel(logging.WARNING)
         import server.lambda_handler
         handlers = logging.getLogger().handlers
         assert runtime_handler not in handlers, handlers

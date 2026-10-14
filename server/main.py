@@ -8,7 +8,6 @@ import traceback
 from collections.abc import Awaitable
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 from fastapi import APIRouter
 from fastapi import FastAPI
@@ -19,13 +18,12 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from openai import OpenAI
 from pinecone import Pinecone
-from pinecone import QueryResponse
+from pinecone import RetryConfig
 from pydantic import BaseModel
 from upstash_ratelimit import FixedWindow
 from upstash_ratelimit import Ratelimit
 from upstash_ratelimit import SlidingWindow
 from upstash_redis import Redis
-from urllib3.util.retry import Retry
 
 from server.config import load_secrets
 from server.search_utils import get_client_key
@@ -68,17 +66,12 @@ prompt_limit = 3000  # 3750
 index_host = "https://conf-ada-002-svrless-29e6444.svc.aped-4627-b74a.pinecone.io"
 index_timeout = 10
 # initialize connection to pinecone (get API key at app.pinecone.io)
-pc = Pinecone(api_key=secrets["PINECONE_KEY"])
-# The client retries every error up to 5 times by default, including read timeouts, so a
-# hung query would take 6 x index_timeout. Keep the quick retries (5xx, connection
-# errors) but give up on a read timeout. Pinecone has no public setting for this.
-pc._openapi_config.retries = Retry(
-    total=2,
-    read=0,
-    backoff_factor=0.25,
-    status_forcelist=(500, 502, 503, 504),
-    allowed_methods=None,
-)
+# v10 retries read timeouts along with everything else and cannot be told not to, so
+# the old urllib3 "read=0" intent is not expressible. Bound the attempts instead:
+# max_retries=1 means at most 2 x index_timeout here, which leaves room inside the
+# 55s Lambda timeout for the embedding and answer calls that follow.
+index_retry = RetryConfig(max_retries=1, backoff_factor=0.25)
+pc = Pinecone(api_key=secrets["PINECONE_KEY"], retry_config=index_retry)
 index = pc.Index(host=index_host)
 
 # init rate limiting
@@ -239,14 +232,12 @@ def search(
 
     # query index
     start = time.perf_counter()
-    query_response = cast(
-        QueryResponse,
-        index.query(
-            vector=embedding,
-            top_k=search_limit,
-            include_metadata=True,
-            _request_timeout=index_timeout,
-        ),
+    # v10 types query() as QueryResponse, so the old cast is redundant.
+    query_response = index.query(
+        vector=embedding,
+        top_k=search_limit,
+        include_metadata=True,
+        timeout=index_timeout,
     )
     index_secs = time.perf_counter() - start
     logger.info("Query response", extra={"query_response": query_response.to_dict()})

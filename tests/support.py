@@ -103,7 +103,6 @@ def query_response() -> QueryResponse:
             ),
         ],
         namespace="",
-        _check_type=False,
     )
 
 
