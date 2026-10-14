@@ -46,6 +46,28 @@ UPSTASH_REDIS_REST_URL=https://....upstash.io
 UPSTASH_REDIS_REST_TOKEN=...
 ```
 
+All four are required: `load_secrets()` runs at import and raises `KeyError` on any
+missing name, so the app will not start without them.
+
+Rather than copy the production secrets into a second file on disk, you can pull them
+into the shell for one session:
+
+```console
+eval "$(aws ssm get-parameters --with-decryption --region us-west-2 \
+  --names /ilc/prod/OPENAI_KEY /ilc/prod/PINECONE_KEY \
+          /ilc/prod/UPSTASH_REDIS_REST_URL /ilc/prod/UPSTASH_REDIS_REST_TOKEN \
+  --query 'Parameters[].[Name,Value]' --output text \
+  | sed 's|/ilc/prod/||' | awk '{print "export "$1"=\""$2"\""}')"
+```
+
+Note the test suite proves nothing about these: `tests/conftest.py` injects fakes
+before `server.main` is imported, so `pytest` is green with an empty `.env`. To check
+the real path:
+
+```console
+env -u SSM_PREFIX .venv/bin/python -c "from server.config import load_secrets; load_secrets()"
+```
+
 `RATE_LIMIT_PER_CLIENT` and `RATE_LIMIT_GLOBAL_DAILY` override the limits. Leave `SSM_PREFIX` and
 `METRIC_NAMESPACE` unset: in Lambda they make the app read its secrets from SSM Parameter Store and
 print CloudWatch metric lines.
