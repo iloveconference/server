@@ -3,4 +3,4 @@ nox==2026.8.17
 nox-poetry==1.2.0
 poetry==2.5.1
 poetry-plugin-export==1.10.1
-virtualenv==21.14.5
+virtualenv==21.14.8
